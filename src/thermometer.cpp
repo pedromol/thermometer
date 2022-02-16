@@ -1,16 +1,6 @@
 #include <Arduino.h>
-
-#include <AsyncTimer.h>
+#include "credentials.h"
 #define AT_BAUD_RATE 115200
-AsyncTimer t;
-
-// TZ
-#include <TimeLib.h>
-#define TIME_ZONE -3
-
-// SSD1306
-#include "U8glib.h"
-const U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NO_ACK);
 
 // ESP8266
 #include <SoftwareSerial.h>
@@ -34,13 +24,19 @@ OneWire oneWire(ONEWIRE_PIN);
 DallasTemperature DS18B20(&oneWire);
 
 // BMP280
+#include <SPI.h>
 #include <Adafruit_BMP280.h>
 
-Adafruit_BMP280 BMP280;
+#define BMP280_SCK 12  // SCL
+#define BMP280_MISO 11 // SDD
+#define BMP280_MOSI 10 // SDA
+#define BMP280_CS 9    // CSB
+
+Adafruit_BMP280 BMP280(BMP280_CS, BMP280_MOSI, BMP280_MISO, BMP280_SCK);
 
 // DHT11
 #include <DHT_U.h>
-#define DHT11_PIN 2
+#define DHT11_PIN A2
 
 DHT_Unified dht11(DHT11_PIN, DHT11);
 
@@ -49,17 +45,28 @@ DHT_Unified dht11(DHT11_PIN, DHT11);
 
 Adafruit_BMP085_Unified BMP180 = Adafruit_BMP085_Unified(10085);
 
-// TMP36
-#include <TMP36.h>
-#define TMP36_PIN A0
+// Sensors constants
+const float MIN_TEMP = 10;
+const float MAX_TEMP = 50;
 
-TMP36 tmp36(TMP36_PIN, 5.0);
+const float MIN_HUMIDITY = 1;
+const float MAX_HUMIDITY = 100;
 
-// LM75
-#include <M2M_LM75A.h>
-#define LM35_PIN A1
+const float MIN_PRESSURE = 800;
+const float MAX_PRESSURE = 1200;
 
-M2M_LM75A LM75;
+// PubSub
+#include <PubSubClient.h>
+
+#define TEMPERATURE_TOPIC "sensor/temperature"
+#define HUMIDITY_TOPIC "sensor/humidity"
+#define PRESSURE_TOPIC "sensor/pressure"
+#define MESSAGE_DELAY 2000
+
+WiFiClient wifiClient;
+PubSubClient client(wifiClient);
+
+long lastMessage = 0;
 
 void serialSetup()
 {
@@ -72,135 +79,94 @@ void serialSetup()
   Serial1.begin(ESP_BAUD_RATE);
 
   WiFi.init(Serial1);
-}
 
-void getDS18B20()
-{
-  DS18B20.requestTemperatures();
-  Serial.print("DS18B20 : ");
-  Serial.println(DS18B20.getTempCByIndex(0));
-}
-
-void getBMP280()
-{
-  Serial.print("BMP280 : ");
-  Serial.println(BMP280.readTemperature());
-  BMP280.readPressure();
-  BMP280.readAltitude(1013.25);
-}
-
-void getDHT11()
-{
-  sensors_event_t event;
-  dht11.temperature().getEvent(&event);
-  Serial.print("DHT11 : ");
-  Serial.println(event.temperature);
-  dht11.humidity().getEvent(&event);
-  // event.relative_humidity
-}
-
-void getTMP36()
-{
-  Serial.print("TMP36 : ");
-  Serial.println(tmp36.getTempC());
-}
-
-void getLM35()
-{
-  Serial.print("LM35 : ");
-  Serial.println((float(analogRead(LM35_PIN)) * 5 / (1023)) / 0.01);
-}
-
-void getBMP180()
-{
-  // sensors_event_t event;
-  // BMP180.getEvent(&event);
-  // BMP180.pressureToAltitude(SENSORS_PRESSURE_SEALEVELHPA, event.pressure);
-
-  float temperature;
-  BMP180.getTemperature(&temperature);
-  Serial.print("BMP180 : ");
-  Serial.println(temperature);
-}
-
-void getLM75()
-{
-  Serial.print("LM75 : ");
-  Serial.println(LM75.getTemperature());
-}
-
-void getWifiTime()
-{
-  setTime(WiFi.getTime() + (SECS_PER_HOUR * TIME_ZONE));
-}
-
-void draw()
-{
-  char buff[20];
-
-  u8g.firstPage();
-  do
+  while (WiFi.status() != WL_CONNECTED)
   {
-    // Date
-    sprintf(buff, "%02d/%02d", day(), month());
-    u8g.drawStr(5, 30, buff);
+    delay(1000);
+  }
+}
 
-    // Date | Temperature
-    u8g.drawLine(80, 0, 80, 35);
+void addIfValid(float maxValue, float minValue, float value, float *values, int8_t *validValues)
+{
+  if (!isnan(value) && value > minValue && value < maxValue)
+  {
+    *values += value;
+    *validValues += 1;
+  }
+}
 
-    // Temperature
-    u8g.drawStr(89, 30, "--");
+void plimPlom()
+{
+  float temperatures = 0;
+  int8_t validTemperatures = 0;
 
-    // First line -- Second line
-    u8g.drawLine(0, 35, 128, 35);
+  float pressures = 0;
+  int8_t validPressures = 0;
 
-    // Hour
-    sprintf(buff, "%02d:%02d:%02d", hour(), minute(), second());
-    u8g.drawStr(10, 59, buff);
+  float humidities = 0;
+  int8_t validHumidities = 0;
 
-    // Frame
-    u8g.drawRFrame(0, 0, 128, 64, 4);
-  } while (u8g.nextPage());
+  sensors_event_t event;
+  float tmp;
+
+  DS18B20.requestTemperatures();
+  addIfValid(MAX_TEMP, MIN_TEMP, DS18B20.getTempCByIndex(0), &temperatures, &validTemperatures);
+
+  addIfValid(MAX_TEMP, MIN_TEMP, BMP280.readTemperature() + 1, &temperatures, &validTemperatures);
+
+  addIfValid(MAX_PRESSURE, MIN_PRESSURE, BMP280.readPressure() / 100, &pressures, &validPressures);
+
+  dht11.temperature().getEvent(&event);
+  addIfValid(MAX_TEMP, MIN_TEMP, event.temperature, &temperatures, &validTemperatures);
+
+  dht11.humidity().getEvent(&event);
+  addIfValid(MAX_HUMIDITY, MIN_HUMIDITY, event.relative_humidity, &humidities, &validHumidities);
+
+  BMP180.getEvent(&event);
+  BMP180.getTemperature(&tmp);
+  addIfValid(MAX_TEMP, MIN_TEMP, tmp, &temperatures, &validTemperatures);
+  addIfValid(MAX_PRESSURE, MIN_PRESSURE, event.pressure + 1, &pressures, &validPressures);
+
+  temperatures /= validTemperatures;
+  humidities /= validHumidities;
+  pressures /= validPressures;
+
+  client.publish(TEMPERATURE_TOPIC, String(temperatures).c_str(), true);
+  client.publish(HUMIDITY_TOPIC, String(humidities).c_str(), true);
+  client.publish(PRESSURE_TOPIC, String(pressures).c_str(), true);
+}
+
+void queueConnect()
+{
+  while (!client.connected())
+  {
+    if (!client.connect(MQTT_DEVICE_NAME))
+    {
+      delay(2000);
+    }
+  }
 }
 
 void setup()
 {
-  analogReference(INTERNAL);
-  u8g.setColorIndex(1);
-  u8g.setFont(u8g_font_fub20n);
-
   serialSetup();
-  getWifiTime();
+  client.setServer(MQTT_SERVER, 1883);
+  queueConnect();
 
   BMP280.begin();
-
-  dht11.begin();
-
   BMP180.begin();
-
-  pinMode(TMP36_PIN, INPUT);
-  pinMode(LM35_PIN, INPUT);
-
-  LM75.begin();
-
-  t.setInterval([]()
-                { draw(); },
-                1000);
-  t.setInterval([]()
-                {
-    getDS18B20();
-    getBMP280();
-    getDHT11();
-    getTMP36();
-    getLM35();
-    getBMP180();
-    getLM75();
-    Serial.println("");
-    Serial.println(""); },
-                2000);
-  t.setInterval([]()
-                { getWifiTime(); },
-                60000);
+  dht11.begin();
 }
 
-void loop() { t.handle(); }
+void loop()
+{
+  queueConnect();
+  client.loop();
+
+  long now = millis();
+  if (now - lastMessage > MESSAGE_DELAY)
+  {
+    lastMessage = now;
+    plimPlom();
+  }
+}
