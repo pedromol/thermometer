@@ -150,19 +150,19 @@ void probeSensors()
 
   if (validTemperatures > 0)
   {
-    temperatureValues += temperatures /= validTemperatures;
+    temperatureValues += temperatures / validTemperatures;
     temperatureProbes += 1;
   }
 
   if (validHumidities > 0)
   {
-    humidityValues += humidities /= validHumidities;
+    humidityValues += humidities / validHumidities;
     humidityProbes += 1;
   }
 
   if (validPressures > 0)
   {
-    pressureValues += pressures /= validPressures;
+    pressureValues += pressures / validPressures;
     pressureProbes += 1;
   }
 
