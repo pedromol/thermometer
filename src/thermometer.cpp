@@ -61,12 +61,27 @@ const float MAX_PRESSURE = 1200;
 #define TEMPERATURE_TOPIC "sensor/temperature"
 #define HUMIDITY_TOPIC "sensor/humidity"
 #define PRESSURE_TOPIC "sensor/pressure"
-#define MESSAGE_DELAY 2000
+#define INVALID_TOPIC "sensor/invalid"
+
+#define MESSAGE_DELAY 30000
+#define PROBE_DELAY 2000
+
+float temperatureValues = 0;
+int temperatureProbes = 0;
+
+float humidityValues = 0;
+int humidityProbes = 0;
+
+float pressureValues = 0;
+int pressureProbes = 0;
+
+int failedProbes = 0;
 
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
 
 long lastMessage = 0;
+long lastProbe = 0;
 
 void serialSetup()
 {
@@ -86,16 +101,20 @@ void serialSetup()
   }
 }
 
-void addIfValid(float maxValue, float minValue, float value, float *values, int8_t *validValues)
+void addIfValid(float maxValue, float minValue, float value, float *values, int8_t *validValues, int8_t *invalidProbes)
 {
   if (!isnan(value) && value > minValue && value < maxValue)
   {
     *values += value;
     *validValues += 1;
   }
+  else
+  {
+    *invalidProbes += 1;
+  }
 }
 
-void plimPlom()
+void probeSensors()
 {
   float temperatures = 0;
   int8_t validTemperatures = 0;
@@ -109,31 +128,78 @@ void plimPlom()
   sensors_event_t event;
   float tmp;
 
+  int8_t invalidProbes = 0;
+
   DS18B20.requestTemperatures();
-  addIfValid(MAX_TEMP, MIN_TEMP, DS18B20.getTempCByIndex(0), &temperatures, &validTemperatures);
+  addIfValid(MAX_TEMP, MIN_TEMP, DS18B20.getTempCByIndex(0), &temperatures, &validTemperatures, &invalidProbes);
 
-  addIfValid(MAX_TEMP, MIN_TEMP, BMP280.readTemperature() + 1, &temperatures, &validTemperatures);
+  addIfValid(MAX_TEMP, MIN_TEMP, BMP280.readTemperature() - 1, &temperatures, &validTemperatures, &invalidProbes);
 
-  addIfValid(MAX_PRESSURE, MIN_PRESSURE, BMP280.readPressure() / 100, &pressures, &validPressures);
+  addIfValid(MAX_PRESSURE, MIN_PRESSURE, BMP280.readPressure() / 100, &pressures, &validPressures, &invalidProbes);
 
   dht11.temperature().getEvent(&event);
-  addIfValid(MAX_TEMP, MIN_TEMP, event.temperature, &temperatures, &validTemperatures);
+  addIfValid(MAX_TEMP, MIN_TEMP, event.temperature, &temperatures, &validTemperatures, &invalidProbes);
 
   dht11.humidity().getEvent(&event);
-  addIfValid(MAX_HUMIDITY, MIN_HUMIDITY, event.relative_humidity, &humidities, &validHumidities);
+  addIfValid(MAX_HUMIDITY, MIN_HUMIDITY, event.relative_humidity, &humidities, &validHumidities, &invalidProbes);
 
   BMP180.getEvent(&event);
   BMP180.getTemperature(&tmp);
-  addIfValid(MAX_TEMP, MIN_TEMP, tmp, &temperatures, &validTemperatures);
-  addIfValid(MAX_PRESSURE, MIN_PRESSURE, event.pressure + 1, &pressures, &validPressures);
+  addIfValid(MAX_TEMP, MIN_TEMP, tmp, &temperatures, &validTemperatures, &invalidProbes);
+  addIfValid(MAX_PRESSURE, MIN_PRESSURE, event.pressure + 1, &pressures, &validPressures, &invalidProbes);
 
-  temperatures /= validTemperatures;
-  humidities /= validHumidities;
-  pressures /= validPressures;
+  if (validTemperatures > 0)
+  {
+    temperatureValues += temperatures /= validTemperatures;
+    temperatureProbes += 1;
+  }
 
-  client.publish(TEMPERATURE_TOPIC, String(temperatures).c_str(), true);
-  client.publish(HUMIDITY_TOPIC, String(humidities).c_str(), true);
-  client.publish(PRESSURE_TOPIC, String(pressures).c_str(), true);
+  if (validHumidities > 0)
+  {
+    humidityValues += humidities /= validHumidities;
+    humidityProbes += 1;
+  }
+
+  if (validPressures > 0)
+  {
+    pressureValues += pressures /= validPressures;
+    pressureProbes += 1;
+  }
+
+  if (invalidProbes > 0)
+  {
+    failedProbes += invalidProbes;
+  }
+}
+
+void sendData()
+{
+  if (temperatureProbes > 0)
+  {
+    temperatureValues /= temperatureProbes;
+    client.publish(TEMPERATURE_TOPIC, String(temperatureValues).c_str(), true);
+    temperatureValues = temperatureProbes = 0;
+  }
+
+  if (humidityProbes > 0)
+  {
+    humidityValues /= humidityProbes;
+    client.publish(HUMIDITY_TOPIC, String(humidityValues).c_str(), true);
+    humidityValues = humidityProbes = 0;
+  }
+
+  if (pressureProbes > 0)
+  {
+    pressureValues /= pressureProbes;
+    client.publish(PRESSURE_TOPIC, String(pressureValues).c_str(), true);
+    pressureValues = pressureProbes = 0;
+  }
+
+  if (failedProbes > 0)
+  {
+    client.publish(INVALID_TOPIC, String(failedProbes).c_str(), true);
+    failedProbes = 0;
+  }
 }
 
 void queueConnect()
@@ -164,9 +230,14 @@ void loop()
   client.loop();
 
   long now = millis();
+  if (now - lastProbe > PROBE_DELAY)
+  {
+    probeSensors();
+    lastProbe = now;
+  }
   if (now - lastMessage > MESSAGE_DELAY)
   {
+    sendData();
     lastMessage = now;
-    plimPlom();
   }
 }
