@@ -1,2 +1,4 @@
-#define MQTT_SERVER "test.mosquitto.org"
-#define MQTT_DEVICE_NAME "thermometerMaroto"
+#define WIFI_SSID "..."
+#define WIFI_PASS "..."
+#define DEVICE_NAME "..."
+#define MQTT_SERVER "..."
