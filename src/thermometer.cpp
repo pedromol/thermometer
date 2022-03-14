@@ -85,8 +85,8 @@ const unsigned char bitmap[] PROGMEM = {
 #define SCREEN_ADDRESS 0x3C
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-#define SDA_PIN 1
-#define SCL_PIN 3
+#define SDA_PIN 3
+#define SCL_PIN 1
 
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
@@ -147,6 +147,10 @@ long lastMessage = 0;
 long lastProbe = 0;
 long lastLoop = 0;
 
+#define MAX_FAILURE 512
+
+int totalFailed = 0;
+
 ADC_MODE(ADC_VCC);
 
 void wifiSetup()
@@ -171,6 +175,8 @@ void displaySetup()
 
   display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
   display.setTextColor(SSD1306_WHITE);
+
+  display.setRotation(2);
 }
 
 boolean queueConnect()
@@ -257,6 +263,7 @@ void probeSensors()
   if (invalidProbes > 0)
   {
     failedProbes += invalidProbes;
+    totalFailed += invalidProbes;
   }
 }
 
@@ -314,9 +321,10 @@ void drawDisplay()
 
   display.clearDisplay();
 
-  // Clock border
   display.setTextSize(1);
-  display.drawRoundRect(0, 0, 128, 64, 8, SSD1306_WHITE);
+
+  // Clock border
+  // display.drawRoundRect(0, 0, 128, 64, 8, SSD1306_WHITE);
 
   // Temperature
   display.setCursor(4, 4);
@@ -373,6 +381,10 @@ void loop()
     drawDisplay();
     client.loop();
     lastLoop = now;
+  }
+  if (totalFailed > MAX_FAILURE)
+  {
+    ESP.reset();
   }
   delay(10);
 }
